@@ -6,40 +6,45 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
-import { loadConfig, Config } from "../config.js";
+import qrcode from "qrcode-terminal";
 
-const logger = pino({ level: "info" });
+const logger = pino({ level: "error" });
 
 interface ClientResult {
-  socket: WASocket;
+  getSocket: () => WASocket | null;
+  onReady: (callback: (socket: WASocket) => void) => void;
   restart: () => void;
 }
 
-export function createClient(config: Config): ClientResult {
-  let socket: WASocket;
+export function createClient(authDir: string): ClientResult {
+  let socket: WASocket | null = null;
   let restartCount = 0;
-  const MAX_RESTART_DELAY = 60_000; // 60 seconds cap
+  let readyCallback: ((socket: WASocket) => void) | null = null;
+  const MAX_RESTART_DELAY = 60_000;
 
   async function connect(): Promise<WASocket> {
-    const { state, saveCreds } = await useMultiFileAuthState("./auth");
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
     socket = makeWASocket({
       auth: state,
-      printQRInTerminal: true,
       logger,
       syncFullHistory: true,
       markOnlineOnConnect: false,
     });
 
-    // Save credentials on update
     socket.ev.on("creds.update", saveCreds);
 
-    // Handle connection updates
     socket.ev.on("connection.update", (update: Partial<ConnectionState>) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        console.log("QR code received, scan with your phone");
+        console.log("\n========================================");
+        console.log("  QR CODE - Scan with your phone");
+        console.log("========================================\n");
+        qrcode.generate(qr, { small: true }, (code) => {
+          console.log(code);
+        });
+        console.log("\n========================================\n");
       }
 
       if (connection === "close") {
@@ -60,7 +65,10 @@ export function createClient(config: Config): ClientResult {
 
       if (connection === "open") {
         console.log("WhatsApp connection established");
-        restartCount = 0; // Reset on successful connection
+        restartCount = 0;
+        if (readyCallback && socket) {
+          readyCallback(socket);
+        }
       }
     });
 
@@ -88,11 +96,14 @@ export function createClient(config: Config): ClientResult {
     });
   }
 
-  // Initial connection
   connect().catch((err) => {
     console.error("Initial connection failed:", err);
     reconnect();
   });
 
-  return { socket: undefined as unknown as WASocket, restart };
+  return {
+    getSocket: () => socket,
+    onReady: (callback) => { readyCallback = callback; },
+    restart,
+  };
 }

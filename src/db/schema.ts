@@ -1,17 +1,15 @@
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 
-export const channels = sqliteTable("channels", {
+export const chats = sqliteTable("chats", {
   jid: text("jid").primaryKey(),
-  name: text("name"),
-  description: text("description"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
 export const messages = sqliteTable("messages", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  channelJid: text("channel_jid")
+  chatJid: text("chat_jid")
     .notNull()
-    .references(() => channels.jid),
+    .references(() => chats.jid),
   messageId: text("message_id").notNull().unique(),
   sender: text("sender"),
   content: text("content"),
@@ -21,9 +19,9 @@ export const messages = sqliteTable("messages", {
 });
 
 export const syncState = sqliteTable("sync_state", {
-  channelJid: text("channel_jid")
+  chatJid: text("chat_jid")
     .primaryKey()
-    .references(() => channels.jid),
+    .references(() => chats.jid),
   lastMessageId: text("last_message_id"),
   lastTimestamp: integer("last_timestamp"),
   lastSyncAt: integer("last_sync_at"),

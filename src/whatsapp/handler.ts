@@ -1,6 +1,6 @@
 import { WASocket } from "@whiskeysockets/baileys";
 import { eq } from "drizzle-orm";
-import { channels, messages, syncState } from "../db/schema.js";
+import { chats, messages, syncState } from "../db/schema.js";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 
 type Database = BetterSQLite3Database<typeof import("../db/schema.js")>;
@@ -8,34 +8,22 @@ type Database = BetterSQLite3Database<typeof import("../db/schema.js")>;
 export function setupMessageHandler(
   socket: WASocket,
   db: Database,
-  channelJid: string
+  chatJid: string
 ): void {
-  // Ensure channel exists in DB
-  const existingChannel = db
-    .select()
-    .from(channels)
-    .where(eq(channels.jid, channelJid))
-    .get();
-
-  if (!existingChannel) {
-    db.insert(channels)
-      .values({
-        jid: channelJid,
-        name: null,
-        description: null,
-        createdAt: new Date(),
-      })
-      .run();
-    console.log(`Channel ${channelJid} registered in database`);
-  }
-
   // Listen for incoming messages
   socket.ev.on("messages.upsert", async ({ messages: msgs, type }) => {
+    console.log(`[DEBUG] messages.upsert received: type=${type}, count=${msgs.length}`);
+
     if (type !== "notify") return; // Only process new messages, not history sync
 
     for (const msg of msgs) {
-      // Filter: only process messages from the configured channel
-      if (msg.key.remoteJid !== channelJid) continue;
+      console.log(`[DEBUG] Message from: remoteJid=${msg.key.remoteJid}, participant=${msg.key.participant}`);
+
+      // Filter: only process messages from the configured chat
+      if (msg.key.remoteJid !== chatJid) {
+        console.log(`[DEBUG] Skipping: remoteJid doesn't match chatJid`);
+        continue;
+      }
 
       // Skip messages with no content
       if (!msg.message) continue;
@@ -67,7 +55,7 @@ export function setupMessageHandler(
       // Insert message
       db.insert(messages)
         .values({
-          channelJid,
+          chatJid,
           messageId,
           sender: sender || null,
           content,
@@ -91,13 +79,13 @@ export function setupMessageHandler(
       const currentSync = db
         .select()
         .from(syncState)
-        .where(eq(syncState.channelJid, channelJid))
+        .where(eq(syncState.chatJid, chatJid))
         .get();
 
       if (!currentSync) {
         db.insert(syncState)
           .values({
-            channelJid,
+            chatJid,
             lastMessageId: messageId,
             lastTimestamp: timestamp,
             lastSyncAt: Math.floor(Date.now() / 1000),
@@ -110,7 +98,7 @@ export function setupMessageHandler(
             lastTimestamp: timestamp,
             lastSyncAt: Math.floor(Date.now() / 1000),
           })
-          .where(eq(syncState.channelJid, channelJid))
+          .where(eq(syncState.chatJid, chatJid))
           .run();
       }
 
@@ -118,5 +106,22 @@ export function setupMessageHandler(
     }
   });
 
-  console.log(`Message handler active for channel: ${channelJid}`);
+  console.log(`Message handler active for chat: ${chatJid}`);
+
+  // Ensure chat exists in DB
+  const existingChat = db
+    .select()
+    .from(chats)
+    .where(eq(chats.jid, chatJid))
+    .get();
+
+  if (!existingChat) {
+    db.insert(chats)
+      .values({
+        jid: chatJid,
+        createdAt: new Date(),
+      })
+      .run();
+    console.log(`Chat ${chatJid} registered in database`);
+  }
 }

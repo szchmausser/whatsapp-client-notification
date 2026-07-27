@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 export interface Config {
-  channelJid: string;
+  chatJid: string;
   dbPath: string;
   logLevel: string;
   authDir: string;
@@ -17,7 +17,7 @@ function requireEnv(name: string): string {
 
 export function loadConfig(): Config {
   return {
-    channelJid: requireEnv("CHANNEL_JID"),
+    chatJid: requireEnv("CHAT_JID"),
     dbPath: process.env.DB_PATH || "./data/collector.db",
     logLevel: process.env.LOG_LEVEL || "info",
     authDir: process.env.AUTH_DIR || "./auth",
