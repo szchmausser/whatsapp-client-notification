@@ -4,6 +4,7 @@ export interface Config {
   channelJid: string;
   dbPath: string;
   logLevel: string;
+  authDir: string;
 }
 
 function requireEnv(name: string): string {
@@ -19,5 +20,6 @@ export function loadConfig(): Config {
     channelJid: requireEnv("CHANNEL_JID"),
     dbPath: process.env.DB_PATH || "./data/collector.db",
     logLevel: process.env.LOG_LEVEL || "info",
+    authDir: process.env.AUTH_DIR || "./auth",
   };
 }

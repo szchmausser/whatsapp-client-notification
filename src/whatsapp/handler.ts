@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { channels, messages, syncState } from "../db/schema.js";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 
-type Database = BetterSQLite3Database<Record<string, never>>;
+type Database = BetterSQLite3Database<typeof import("../db/schema.js")>;
 
 export function setupMessageHandler(
   socket: WASocket,
