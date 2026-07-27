@@ -20,6 +20,7 @@ export function createClient(authDir: string): ClientResult {
   let socket: WASocket | null = null;
   let restartCount = 0;
   let readyCallback: ((socket: WASocket) => void) | null = null;
+  let handlerRegistered = false;
   const MAX_RESTART_DELAY = 60_000;
 
   async function connect(): Promise<WASocket> {
@@ -66,7 +67,8 @@ export function createClient(authDir: string): ClientResult {
       if (connection === "open") {
         console.log("WhatsApp connection established");
         restartCount = 0;
-        if (readyCallback && socket) {
+        if (readyCallback && socket && !handlerRegistered) {
+          handlerRegistered = true;
           readyCallback(socket);
         }
       }

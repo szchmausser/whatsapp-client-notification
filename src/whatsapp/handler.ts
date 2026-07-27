@@ -2,6 +2,7 @@ import { WASocket } from "@whiskeysockets/baileys";
 import { eq } from "drizzle-orm";
 import { chats, messages, syncState } from "../db/schema.js";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type { CaptureDirection } from "../config.js";
 
 type Database = BetterSQLite3Database<typeof import("../db/schema.js")>;
 
@@ -13,8 +14,11 @@ function extractPhoneFromVCard(vcard: string): string | null {
 export function setupMessageHandler(
   socket: WASocket,
   db: Database,
-  chatJid: string
+  chatJid: string,
+  captureDirection: CaptureDirection = "both"
 ): void {
+  console.log(`Message handler active for chat: ${chatJid} (direction: ${captureDirection})`);
+
   // Listen for incoming messages
   socket.ev.on("messages.upsert", async ({ messages: msgs, type }) => {
     console.log(`[DEBUG] messages.upsert received: type=${type}, count=${msgs.length}`);
@@ -22,7 +26,21 @@ export function setupMessageHandler(
     if (type !== "notify") return; // Only process new messages, not history sync
 
     for (const msg of msgs) {
-      console.log(`[DEBUG] Message from: remoteJid=${msg.key.remoteJid}, participant=${msg.key.participant}`);
+      const isFromMe = msg.key.fromMe ?? false;
+
+      console.log(`[DEBUG] CAPTURE_DIRECTION=${captureDirection}, isFromMe=${isFromMe}`);
+
+      // Filter by capture direction
+      if (captureDirection === "incoming" && isFromMe) {
+        console.log(`[DEBUG] Skipping outgoing message (direction: incoming)`);
+        continue;
+      }
+      if (captureDirection === "outgoing" && !isFromMe) {
+        console.log(`[DEBUG] Skipping incoming message (direction: outgoing)`);
+        continue;
+      }
+
+      console.log(`[DEBUG] Message from: remoteJid=${msg.key.remoteJid}, participant=${msg.key.participant}, fromMe=${isFromMe}`);
 
       // Filter: only process messages from the configured chat
       if (msg.key.remoteJid !== chatJid) {
@@ -74,7 +92,6 @@ export function setupMessageHandler(
       // Message flags
       const isForwarded =
         m.extendedTextMessage?.contextInfo?.isForwarded ?? null;
-      const isFromMe = msg.key.fromMe ?? null;
 
       // Media (image, video, audio, document)
       const imageMsg = m.imageMessage;
