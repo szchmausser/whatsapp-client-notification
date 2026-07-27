@@ -131,3 +131,25 @@ npm run db:push      # Push schema to DB (dev)
 - Conventional commits: `feat:`, `fix:`, `chore:`, etc.
 - No AI attribution or "Co-Authored-By" tags
 - Each implementation step = 1 manual commit
+
+## npm v12 Workaround (EALLOWSCRIPTS)
+
+Baileys from GitHub has a `prepare` script that npm v12 blocks by default. If `npm install` fails with `EALLOWSCRIPTS`:
+
+```bash
+# 1. Clean everything
+Stop-Process -Name "node" -Force -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue
+Remove-Item -Force package-lock.json -ErrorAction SilentlyContinue
+
+# 2. Remove any allow-scripts config that may have been set
+npm config delete allow-scripts
+
+# 3. Install fresh
+npm install
+
+# 4. Review and approve pending scripts
+npm approve-scripts --allow-scripts-pending
+```
+
+The `allowScripts` field in `package.json` must use pinned versions (e.g., `"@whiskeysockets/baileys@7.0.0-rc13": true`).
