@@ -1,10 +1,8 @@
 import { WASocket } from "@whiskeysockets/baileys";
 import { eq } from "drizzle-orm";
 import { chats, messages, syncState } from "../db/schema.js";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type { Database } from "../db/index.js";
 import type { CaptureDirection } from "../config.js";
-
-type Database = BetterSQLite3Database<typeof import("../db/schema.js")>;
 
 function extractPhoneFromVCard(vcard: string): string | null {
   const match = vcard.match(/TEL[^:]*:([^\r\n]+)/);
@@ -55,13 +53,13 @@ export function setupMessageHandler(
       if (!messageId) continue;
 
       // Idempotency check: skip if already exists
-      const existing = db
+      const existing = await db
         .select()
         .from(messages)
         .where(eq(messages.messageId, messageId))
-        .get();
+        .limit(1);
 
-      if (existing) {
+      if (existing.length > 0) {
         console.log(`Message ${messageId} already exists, skipping`);
         continue;
       }
@@ -202,77 +200,59 @@ export function setupMessageHandler(
       const orderNote = orderMsg?.message || null;
 
       // Insert message
-      db.insert(messages)
-        .values({
-          chatJid,
-          messageId,
-          sender: sender || null,
-          content,
-          messageType,
-          timestamp: msg.messageTimestamp
-            ? typeof msg.messageTimestamp === "number"
-              ? msg.messageTimestamp
-              : Number(msg.messageTimestamp)
-            : Math.floor(Date.now() / 1000),
-          createdAt: new Date(),
-          text,
-          senderName,
-          replyTo,
-          isForwarded,
-          isFromMe,
-          mimeType,
-          fileSize,
-          caption,
-          mediaUrl,
-          latitude,
-          longitude,
-          contactName,
-          contactPhone,
-          fileName,
-          documentUrl,
-          reactionTo,
-          reactionEmoji,
-
-          // Text metadata
-          forwardingScore,
-          isViewOnce,
-          ephemeralExpiration,
-          broadcast,
-          pushName,
-
-          // Audio/Video duration
-          seconds,
-          ptt,
-
-          // Sticker
-          isAnimated,
-
-          // Thumbnail (base64)
-          jpegThumbnail,
-
-          // Polls
-          pollName,
-          pollValues,
-          selectableCount,
-
-          // Group Invite
-          groupJid,
-          groupName,
-          inviteCode,
-          inviteExpiration,
-
-          // Interactive Responses
-          selectedButtonId,
-          selectedListOption,
-          templateButtonSelectedId,
-          nativeFlowResponse,
-
-          // Order
-          orderId,
-          orderHeadline,
-          orderNote,
-        })
-        .run();
+      await db.insert(messages).values({
+        chatJid,
+        messageId,
+        sender: sender || null,
+        content,
+        messageType,
+        timestamp: msg.messageTimestamp
+          ? typeof msg.messageTimestamp === "number"
+            ? msg.messageTimestamp
+            : Number(msg.messageTimestamp)
+          : Math.floor(Date.now() / 1000),
+        createdAt: new Date(),
+        text: text || null,
+        senderName: senderName || null,
+        replyTo: replyTo || null,
+        isForwarded: isForwarded ? true : false,
+        isFromMe: isFromMe ? true : false,
+        mimeType: mimeType || null,
+        fileSize: fileSize || null,
+        caption: caption || null,
+        mediaUrl: mediaUrl || null,
+        latitude: latitude || null,
+        longitude: longitude || null,
+        contactName: contactName || null,
+        contactPhone: contactPhone || null,
+        fileName: fileName || null,
+        documentUrl: documentUrl || null,
+        reactionTo: reactionTo || null,
+        reactionEmoji: reactionEmoji || null,
+        forwardingScore: forwardingScore || null,
+        isViewOnce: isViewOnce ? true : false,
+        ephemeralExpiration: ephemeralExpiration || null,
+        broadcast: broadcast ? true : false,
+        pushName: pushName || null,
+        seconds: seconds || null,
+        ptt: ptt ? true : false,
+        isAnimated: isAnimated ? true : false,
+        jpegThumbnail: jpegThumbnail || null,
+        pollName: pollName || null,
+        pollValues: pollValues || null,
+        selectableCount: selectableCount || null,
+        groupJid: groupJid || null,
+        groupName: groupName || null,
+        inviteCode: inviteCode || null,
+        inviteExpiration: inviteExpiration || null,
+        selectedButtonId: selectedButtonId || null,
+        selectedListOption: selectedListOption || null,
+        templateButtonSelectedId: templateButtonSelectedId || null,
+        nativeFlowResponse: nativeFlowResponse || null,
+        orderId: orderId || null,
+        orderHeadline: orderHeadline || null,
+        orderNote: orderNote || null,
+      });
 
       // Update sync state
       const timestamp = msg.messageTimestamp
@@ -281,30 +261,27 @@ export function setupMessageHandler(
           : Number(msg.messageTimestamp)
         : Math.floor(Date.now() / 1000);
 
-      const currentSync = db
+      const currentSync = await db
         .select()
         .from(syncState)
         .where(eq(syncState.chatJid, chatJid))
-        .get();
+        .limit(1);
 
-      if (!currentSync) {
-        db.insert(syncState)
-          .values({
-            chatJid,
-            lastMessageId: messageId,
-            lastTimestamp: timestamp,
-            lastSyncAt: Math.floor(Date.now() / 1000),
-          })
-          .run();
-      } else if (!currentSync.lastTimestamp || timestamp > currentSync.lastTimestamp) {
-        db.update(syncState)
+      if (currentSync.length === 0) {
+        await db.insert(syncState).values({
+          chatJid,
+          lastMessageId: messageId,
+          lastTimestamp: timestamp,
+          lastSyncAt: Math.floor(Date.now() / 1000),
+        });
+      } else if (!currentSync[0].lastTimestamp || timestamp > currentSync[0].lastTimestamp) {
+        await db.update(syncState)
           .set({
             lastMessageId: messageId,
             lastTimestamp: timestamp,
             lastSyncAt: Math.floor(Date.now() / 1000),
           })
-          .where(eq(syncState.chatJid, chatJid))
-          .run();
+          .where(eq(syncState.chatJid, chatJid));
       }
 
       console.log(`Message captured: ${messageId} from ${sender}`);
@@ -314,19 +291,18 @@ export function setupMessageHandler(
   console.log(`Message handler active for chat: ${chatJid}`);
 
   // Ensure chat exists in DB
-  const existingChat = db
-    .select()
+  db.select()
     .from(chats)
     .where(eq(chats.jid, chatJid))
-    .get();
-
-  if (!existingChat) {
-    db.insert(chats)
-      .values({
-        jid: chatJid,
-        createdAt: new Date(),
-      })
-      .run();
-    console.log(`Chat ${chatJid} registered in database`);
-  }
+    .limit(1)
+    .then((rows) => {
+      if (rows.length === 0) {
+        db.insert(chats).values({
+          jid: chatJid,
+          createdAt: new Date(),
+        }).then(() => {
+          console.log(`Chat ${chatJid} registered in database`);
+        });
+      }
+    });
 }

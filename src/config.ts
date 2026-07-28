@@ -4,7 +4,13 @@ export type CaptureDirection = "incoming" | "outgoing" | "both";
 
 export interface Config {
   chatJid: string;
-  dbPath: string;
+  db: {
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+    database: string;
+  };
   logLevel: string;
   authDir: string;
   captureDirection: CaptureDirection;
@@ -26,7 +32,13 @@ export function loadConfig(): Config {
 
   return {
     chatJid: requireEnv("CHAT_JID"),
-    dbPath: process.env.DB_PATH || "./data/collector.db",
+    db: {
+      host: process.env.DB_HOST || "localhost",
+      port: parseInt(process.env.DB_PORT || "3306", 10),
+      user: process.env.DB_USER || "reader_notification",
+      password: process.env.DB_PASSWORD || "password123",
+      database: process.env.DB_NAME || "hj-app",
+    },
     logLevel: process.env.LOG_LEVEL || "info",
     authDir: process.env.AUTH_DIR || "./auth",
     captureDirection: direction as CaptureDirection,

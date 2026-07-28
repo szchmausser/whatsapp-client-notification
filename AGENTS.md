@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Standalone Node.js + TypeScript service that captures WhatsApp Channel messages and persists them to SQLite. This is a **data collector** — other systems consume the SQLite DB directly.
+Standalone Node.js + TypeScript service that captures WhatsApp messages and persists them to MySQL. This is a **data collector** — other systems consume the MySQL database directly.
 
 ## Tech Stack
 
@@ -10,8 +10,7 @@ Standalone Node.js + TypeScript service that captures WhatsApp Channel messages 
 |------------|---------|---------|
 | Node.js + TypeScript | Runtime + types | ES2022, strict mode |
 | @whiskeysockets/baileys | WhatsApp Web API | github:edge |
-| Drizzle ORM | Schema + migrations | latest |
-| better-sqlite3 | SQLite driver (synchronous) | ^12.x |
+| mysql2 | MySQL driver | ^3.x |
 | pino | Logging (Baileys native) | ^9.x |
 | dotenv | Environment config | ^16.x |
 | tsx | Dev runner with watch | ^4.x |
@@ -22,14 +21,14 @@ Standalone Node.js + TypeScript service that captures WhatsApp Channel messages 
 client-notification/
 ├── src/
 │   ├── db/
-│   │   ├── schema.ts       # Drizzle schema (channels, messages, sync_state)
-│   │   └── index.ts        # Init DB + migrate
+│   │   ├── schema.ts       # MySQL schema (chats, messages, sync_state)
+│   │   └── index.ts        # MySQL connection
 │   ├── whatsapp/
 │   │   ├── client.ts       # makeWASocket + connection + reconnection
-│   │   └── handler.ts      # messages.upsert → persist + idempotency
+│   │   ├── handler.ts      # messages.upsert → persist + idempotency
+│   │   └── sync.ts         # Catch-up sync (placeholder)
 │   ├── config.ts           # dotenv config (typed)
 │   └── index.ts            # Entry point
-├── drizzle/                # Generated migrations (DO commit)
 ├── drizzle.config.ts
 ├── package.json
 ├── tsconfig.json
@@ -37,44 +36,49 @@ client-notification/
 └── .gitignore
 ```
 
-## Database Schema (SQLite via Drizzle)
+## Database Schema (MySQL)
 
-### channels
-- `jid` (TEXT, PK) — WhatsApp channel JID ending in @newsletter
-- `name` (TEXT) — Channel name
-- `description` (TEXT) — Channel description
-- `created_at` (INTEGER) — Creation timestamp
+### chats
+- `jid` (VARCHAR(255), PK) — WhatsApp chat JID
+- `created_at` (TIMESTAMP) — Creation timestamp
 
 ### messages
-- `id` (INTEGER, PK AUTOINCREMENT)
-- `channel_jid` (TEXT, FK → channels.jid)
-- `message_id` (TEXT, UNIQUE) — **Idempotency key**
-- `sender` (TEXT) — Message sender
+- `id` (INT, PK AUTO_INCREMENT)
+- `chat_jid` (VARCHAR(255), FK → chats.jid)
+- `message_id` (VARCHAR(255), UNIQUE) — **Idempotency key**
+- `sender` (VARCHAR(255)) — Message sender
 - `content` (TEXT) — Raw JSON payload
-- `message_type` (TEXT) — Message type (text, image, etc.)
-- `timestamp` (INTEGER) — Message timestamp
-- `created_at` (INTEGER) — Insertion timestamp
+- `message_type` (VARCHAR(50)) — Message type (text, image, etc.)
+- `timestamp` (INT) — Message timestamp
+- `created_at` (TIMESTAMP) — Insertion timestamp
+- + 30+ processed fields for text, media, location, contacts, etc.
 
 ### sync_state
-- `channel_jid` (TEXT, PK, FK → channels.jid)
-- `last_message_id` (TEXT) — Last processed message ID
-- `last_timestamp` (INTEGER) — Last processed timestamp
-- `last_sync_at` (INTEGER) — Last sync timestamp
+- `chat_jid` (VARCHAR(255), PK, FK → chats.jid)
+- `last_message_id` (VARCHAR(255)) — Last processed message ID
+- `last_timestamp` (INT) — Last processed timestamp
+- `last_sync_at` (INT) — Last sync timestamp
 
 ## Design Principles
 
 - **KISS + YAGNI strictly** — no anticipatory abstractions
-- **No repository pattern** — Drizzle IS the data access layer
+- **No repository pattern** — raw MySQL queries
 - **No controllers/services/DTOs** — no web framework exists here
 - **Raw payload storage** — store JSON, extract only what's queried
-- **Idempotency via UNIQUE** — `message_id` constraint + INSERT OR IGNORE
+- **Idempotency via UNIQUE** — `message_id` constraint + check before insert
 
 ## Environment Variables
 
 ```bash
-CHANNEL_JID=     # WhatsApp channel JID (must end with @newsletter)
-DB_PATH=./data/collector.db  # SQLite database path
-LOG_LEVEL=info   # trace|debug|info|warn|error|fatal
+CHAT_JID=15277450379385@lid  # WhatsApp chat JID
+DB_HOST=localhost             # MySQL host
+DB_PORT=3306                  # MySQL port
+DB_USER=reader_notification   # MySQL user
+DB_PASSWORD=password123       # MySQL password
+DB_NAME=client_notification   # MySQL database
+AUTH_DIR=./auth               # WhatsApp session directory
+CAPTURE_DIRECTION=incoming    # incoming|outgoing|both
+LOG_LEVEL=info                # trace|debug|info|warn|error|fatal
 ```
 
 ## Available Scripts
@@ -83,9 +87,6 @@ LOG_LEVEL=info   # trace|debug|info|warn|error|fatal
 npm run dev          # Dev mode with watch (tsx watch)
 npm run build        # Compile TypeScript
 npm start            # Run compiled output
-npm run db:generate  # Generate Drizzle migration
-npm run db:migrate   # Run pending migrations
-npm run db:push      # Push schema to DB (dev)
 ```
 
 ## Key APIs Used
@@ -95,18 +96,11 @@ npm run db:push      # Push schema to DB (dev)
 - `useMultiFileAuthState()` — Persist session to disk
 - `sock.ev.on('messages.upsert')` — Capture incoming messages
 - `sock.ev.on('connection.update')` — Handle reconnection
-- `sock.newsletterFetchMessages()` — Backfill historical messages
 - `sock.ev.on('creds.update', saveCreds)` — Persist auth state
 
-### Drizzle ORM
-- `sqliteTable()` — Define table schema
-- `drizzle-kit generate` — Create migration files
-- `drizzle-kit migrate` — Apply migrations
-- `migrate(db)` — Programmatic migration on startup
-
-### better-sqlite3
-- `new Database(path)` — Open/create SQLite file
-- `db.pragma('journal_mode = WAL') — Enable WAL for performance`
+### MySQL2
+- `mysql.createPool()` — Create connection pool
+- `conn.execute()` — Run queries
 
 ## Conventions
 

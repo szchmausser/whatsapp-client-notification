@@ -1,10 +1,10 @@
 import { defineConfig } from "drizzle-kit";
 
 export default defineConfig({
-  dialect: "sqlite",
+  dialect: "mysql",
   schema: "./src/db/schema.ts",
   out: "./drizzle",
   dbCredentials: {
-    url: process.env.DB_PATH || "./data/collector.db",
+    url: process.env.DATABASE_URL || "mysql://reader_notification:password123@localhost:3306/client_notification",
   },
 });

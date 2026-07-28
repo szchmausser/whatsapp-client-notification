@@ -1,16 +1,26 @@
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2/promise";
 import * as schema from "./schema.js";
 
-export function createDb(dbPath: string) {
-  const sqlite = new Database(dbPath);
-  sqlite.pragma("journal_mode = WAL");
+export interface DbConfig {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+}
 
-  const db = drizzle(sqlite, { schema });
+export async function createDb(config: DbConfig) {
+  const pool = mysql.createPool({
+    host: config.host,
+    port: config.port,
+    user: config.user,
+    password: config.password,
+    database: config.database,
+  });
 
-  // Run migrations
-  migrate(db, { migrationsFolder: "./drizzle" });
-
+  const db = drizzle(pool, { schema, mode: "default" });
   return db;
 }
+
+export type Database = ReturnType<typeof createDb> extends Promise<infer T> ? T : never;

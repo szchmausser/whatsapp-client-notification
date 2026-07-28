@@ -9,8 +9,8 @@ async function main(): Promise<void> {
 
   try {
     // 1. Initialize database
-    const db = createDb(config.dbPath);
-    console.log(`Database initialized: ${config.dbPath}`);
+    const db = await createDb(config.db);
+    console.log(`Database initialized: ${config.db.host}:${config.db.port}/${config.db.database}`);
 
     // 2. Connect to WhatsApp
     const client = createClient(config.authDir);

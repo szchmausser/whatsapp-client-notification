@@ -1,11 +1,9 @@
 import type { WASocket } from "@whiskeysockets/baileys";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-
-type Database = BetterSQLite3Database<typeof import("../db/schema.js")>;
+import type { Connection } from "mysql2/promise";
 
 export async function performCatchUpSync(
   _socket: WASocket,
-  _db: Database,
+  _db: Connection,
   _chatJid: string
 ): Promise<void> {
   console.log("Backfill not supported for individual chats");
