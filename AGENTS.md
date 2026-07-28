@@ -69,15 +69,49 @@ client-notification/
 
 ## Environment Variables
 
+### WhatsApp
+
 ```bash
-CHAT_JID=15277450379385@lid  # WhatsApp chat JID
-DB_HOST=localhost             # MySQL host
-DB_PORT=3306                  # MySQL port
-DB_USER=reader_notification   # MySQL user
-DB_PASSWORD=password123       # MySQL password
-DB_NAME=client_notification   # MySQL database
-AUTH_DIR=./auth               # WhatsApp session directory
-CAPTURE_DIRECTION=incoming    # incoming|outgoing|both
+# MONITOR_JID — Identificador del chat/grupo a monitorear (JID)
+#
+# Tipos de JID en WhatsApp:
+#   Individual: 123456789@s.whatsapp.net  (chat 1:1, formato antiguo)
+#   Individual: 123456789@lid             (chat 1:1, formato nuevo/LID)
+#   Grupo:      123456789@g.us            (grupo con múltiples participantes)
+#   Canal:      123456789@newsletter      (canal de difusión)
+#
+# Ejemplos reales:
+#   Personal (pruebas): 15277450379385@lid
+#   SEGURIDAD INTERNA AYAH (grupo): 120363329903619153@g.us
+#
+# Para obtener el JID de un grupo:
+#   - Usar extensión WhatsApp Group ID Extract
+#   - O inspeccionar los logs del collector con todos los chats habilitados
+#
+# En grupos: remoteJid = JID del grupo, participant = quién envió el mensaje
+MONITOR_JID=120363329903619153@g.us
+
+# Dirección de captura: incoming, outgoing, o both
+CAPTURE_DIRECTION=incoming
+
+# Clasificador de despachos: true para habilitar
+DISPATCH_ENABLED=true
+```
+
+### Base de datos
+
+```bash
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=reader_notification
+DB_PASSWORD=password123
+DB_NAME=client_notification
+```
+
+### App
+
+```bash
+AUTH_DIR=./auth               # Directorio de sesión WhatsApp
 LOG_LEVEL=info                # trace|debug|info|warn|error|fatal
 ```
 

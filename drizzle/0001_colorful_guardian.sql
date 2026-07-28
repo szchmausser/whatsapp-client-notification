@@ -1,0 +1,30 @@
+CREATE TABLE `dispatch_notifications` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`message_id` varchar(255) NOT NULL,
+	`chat_jid` varchar(255) NOT NULL,
+	`is_dispatch` boolean NOT NULL DEFAULT false,
+	`confidence` real NOT NULL DEFAULT 0,
+	`dispatch_type` varchar(50),
+	`vehicle_type` varchar(100),
+	`plate` varchar(50),
+	`driver_name` varchar(255),
+	`driver_id` varchar(100),
+	`driver_phone` varchar(50),
+	`motorcycle_count` int,
+	`destination_name` varchar(255),
+	`invoices` text,
+	`control_notes` text,
+	`franelas` int,
+	`warranty` varchar(100),
+	`matched_company_id` int,
+	`matched_confidence` real,
+	`status` enum('pending','sending','sent','error') NOT NULL DEFAULT 'pending',
+	`classified_at` timestamp NOT NULL,
+	`sent_at` timestamp,
+	`error_message` text,
+	`created_at` timestamp NOT NULL,
+	CONSTRAINT `dispatch_notifications_id` PRIMARY KEY(`id`),
+	CONSTRAINT `dispatch_notifications_message_id_unique` UNIQUE(`message_id`)
+);
+--> statement-breakpoint
+ALTER TABLE `dispatch_notifications` ADD CONSTRAINT `dispatch_notifications_message_id_messages_message_id_fk` FOREIGN KEY (`message_id`) REFERENCES `messages`(`message_id`) ON DELETE no action ON UPDATE no action;

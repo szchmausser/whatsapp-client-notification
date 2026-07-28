@@ -1,0 +1,2 @@
+ALTER TABLE `dispatch_notifications` MODIFY COLUMN `status` enum('pending_review','pending','sending','sent','error') NOT NULL DEFAULT 'pending_review';--> statement-breakpoint
+ALTER TABLE `dispatch_notifications` ADD `raw_text` text;

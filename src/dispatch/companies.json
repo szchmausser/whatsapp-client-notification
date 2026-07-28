@@ -1,0 +1,32 @@
+[
+  {
+    "id": 1,
+    "name": "Autolider",
+    "keywords": ["autolider", "lider"],
+    "aliases": ["autolider", "auto lider", "autolider s.a.s"]
+  },
+  {
+    "id": 2,
+    "name": "Automey",
+    "keywords": ["automey", "mey"],
+    "aliases": ["automey", "auto mey", "automey s.a.s"]
+  },
+  {
+    "id": 3,
+    "name": "Suzuki 51",
+    "keywords": ["suzuki 51", "suzuki", "carrera 51"],
+    "aliases": ["suzuki 51", "suzuki carrera 51", "suzuki51"]
+  },
+  {
+    "id": 4,
+    "name": "Motorysa",
+    "keywords": ["motorysa", "rysa"],
+    "aliases": ["motorysa", "moto rysa", "motorysa s.a.s"]
+  },
+  {
+    "id": 5,
+    "name": "Autotecni",
+    "keywords": ["autotecni", "tecnic", "autotecnicos"],
+    "aliases": ["autotecni", "auto tecni", "autotecnica"]
+  }
+]

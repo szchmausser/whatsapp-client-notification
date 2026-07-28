@@ -8,6 +8,27 @@
       "when": 1785259103820,
       "tag": "0000_init_mysql",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1785260667592,
+      "tag": "0001_colorful_guardian",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1785265000894,
+      "tag": "0002_far_sentinels",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1785265787380,
+      "tag": "0003_light_captain_stacy",
+      "breakpoints": true
     }
   ]
 }

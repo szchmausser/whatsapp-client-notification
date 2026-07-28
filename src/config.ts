@@ -14,6 +14,7 @@ export interface Config {
   logLevel: string;
   authDir: string;
   captureDirection: CaptureDirection;
+  dispatchEnabled: boolean;
 }
 
 function requireEnv(name: string): string {
@@ -31,16 +32,17 @@ export function loadConfig(): Config {
   }
 
   return {
-    chatJid: requireEnv("CHAT_JID"),
+    chatJid: requireEnv("MONITOR_JID"),
     db: {
       host: process.env.DB_HOST || "localhost",
       port: parseInt(process.env.DB_PORT || "3306", 10),
       user: process.env.DB_USER || "reader_notification",
       password: process.env.DB_PASSWORD || "password123",
-      database: process.env.DB_NAME || "hj-app",
+      database: process.env.DB_NAME || "client_notification",
     },
     logLevel: process.env.LOG_LEVEL || "info",
     authDir: process.env.AUTH_DIR || "./auth",
     captureDirection: direction as CaptureDirection,
+    dispatchEnabled: process.env.DISPATCH_ENABLED === "true",
   };
 }

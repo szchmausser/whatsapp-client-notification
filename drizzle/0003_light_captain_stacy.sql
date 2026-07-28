@@ -1,0 +1,1 @@
+ALTER TABLE `dispatch_notifications` MODIFY COLUMN `status` enum('pending_extraction','pending_review','ready_to_send','sent','error') NOT NULL DEFAULT 'pending_extraction';

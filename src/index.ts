@@ -18,7 +18,7 @@ async function main(): Promise<void> {
     // 3. When connection is ready, setup handler
     client.onReady((socket) => {
       console.log("Setting up message handler...");
-      setupMessageHandler(socket, db, config.chatJid, config.captureDirection);
+      setupMessageHandler(socket, db, config.chatJid, config.captureDirection, config.dispatchEnabled);
     });
 
     // 4. Graceful shutdown
