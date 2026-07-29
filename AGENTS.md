@@ -9,7 +9,7 @@ Standalone Node.js + TypeScript service that captures WhatsApp messages and pers
 | Technology | Purpose | Version |
 |------------|---------|---------|
 | Node.js + TypeScript | Runtime + types | ES2022, strict mode |
-| @whiskeysockets/baileys | WhatsApp Web API | github:edge |
+| @whiskeysockets/baileys | WhatsApp Web API | ^7.0.0-rc14 |
 | mysql2 | MySQL driver | ^3.x |
 | pino | Logging (Baileys native) | ^9.x |
 | dotenv | Environment config | ^16.x |
@@ -26,7 +26,14 @@ client-notification/
 │   ├── whatsapp/
 │   │   ├── client.ts       # makeWASocket + connection + reconnection
 │   │   ├── handler.ts      # messages.upsert → persist + idempotency
-│   │   └── sync.ts         # Catch-up sync (placeholder)
+│   │   └── sync.ts         # History gap fill on reconnection
+│   ├── dispatch/
+│   │   ├── classifier.ts   # Gate-based dispatch classifier
+│   │   ├── extractor.ts    # Regex field extractor
+│   │   ├── matcher.ts      # Company matching (Levenshtein + word overlap)
+│   │   ├── companies.json  # Static company data
+│   │   ├── types.ts        # DispatchFields, ClassificationResult
+│   │   └── index.ts        # Barrel exports
 │   ├── config.ts           # dotenv config (typed)
 │   └── index.ts            # Entry point
 ├── drizzle.config.ts
@@ -74,19 +81,42 @@ client-notification/
 ```bash
 # MONITOR_JID — Identificador del chat/grupo a monitorear (JID)
 #
-# Tipos de JID en WhatsApp:
-#   Individual: 123456789@s.whatsapp.net  (chat 1:1, formato antiguo)
-#   Individual: 123456789@lid             (chat 1:1, formato nuevo/LID)
-#   Grupo:      123456789@g.us            (grupo con múltiples participantes)
-#   Canal:      123456789@newsletter      (canal de difusión)
+# Formatos de JID en WhatsApp:
 #
-# Ejemplos reales:
-#   Personal (pruebas): 15277450379385@lid
-#   SEGURIDAD INTERNA AYAH (grupo): 120363329903619153@g.us
+#   CHAT INDIVIDUAL (1:1):
+#     numero@s.whatsapp.net  ← Formato viejo (número de teléfono).
+#                               Ejemplo: 584129338026@s.whatsapp.net
 #
-# Para obtener el JID de un grupo:
-#   - Usar extensión WhatsApp Group ID Extract
-#   - O inspeccionar los logs del collector con todos los chats habilitados
+#     id@lid                 ← Formato nuevo (LID). El ID es un identificador
+#                               INTERNO de WhatsApp, NO es el número de teléfono.
+#                               Ejemplo: 15277450379385@lid
+#                               (corresponde al número 584129338026)
+#
+#   GRUPO:
+#     id@g.us                ← Grupo con múltiples participantes.
+#                               Ejemplo: 120363329903619153@g.us
+#
+#   CANAL:
+#     id@newsletter          ← Canal de difusión.
+#
+# CÓMO OBTENER EL JID CORRECTO:
+#
+#   CHAT INDIVIDUAL (recomendado):
+#     1. Iniciar el collector con MONITOR_JID vacío o con un valor temporal
+#     2. Enviar un mensaje desde OTRO teléfono a tu chat personal
+#     3. En los logs aparece: "remoteJid: XXXXX"
+#        Ejemplo: "remoteJid: 15277450379385@lid"
+#     4. Copiar ese JID exacto aquí
+#
+#   GRUPO:
+#     1. Mismos pasos que arriba
+#     2. En grupos el remoteJid es el JID del grupo (formato @g.us)
+#     3. El participant indica quién envió el mensaje
+#
+#   NOTA: El JID @lid es específico de TU sesión de WhatsApp.
+#         No hay forma de convertir un número a @lid sin iniciar sesión.
+#         Es estable mientras no borres ./auth. Si WhatsApp te desloguea
+#         o borrás ./auth, el LID puede cambiar — volvé a obtenerlo con el método anterior.
 #
 # En grupos: remoteJid = JID del grupo, participant = quién envió el mensaje
 MONITOR_JID=120363329903619153@g.us

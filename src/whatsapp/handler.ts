@@ -19,9 +19,9 @@ export function setupMessageHandler(
 ): void {
   console.log(`Message handler active for chat: ${chatJid} (direction: ${captureDirection})`);
 
-  // Listen for incoming messages
+  // Listen for incoming messages (notify = real-time, append = history sync)
   socket.ev.on("messages.upsert", async ({ messages: msgs, type }) => {
-    if (type !== "notify") return; // Only process new messages, not history sync
+    if (type !== "notify" && type !== "append") return; // Skip other types (replace, etc.)
 
     for (const msg of msgs) {
       const isFromMe = msg.key.fromMe ?? false;

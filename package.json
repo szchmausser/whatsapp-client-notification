@@ -12,7 +12,7 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "github:WhiskeySockets/Baileys",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "dotenv": "^16.4.7",
     "drizzle-orm": "^0.38.0",
     "mysql2": "^3.23.2",

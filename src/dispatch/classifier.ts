@@ -24,6 +24,10 @@ const PLATE_PATTERN = /\bplacas?\s*:?\s*([A-Z0-9]{5,8})\b/i;
 // Cargo: motorcycles, with a count.
 const MOTOS_COUNT = /\b(\d+)\s*motos?\b/i;
 
+// Cargo: motorcycle keyword present (without requiring a count).
+// Catches patterns like "tipo moto" where no explicit count is given.
+const MOTOS_KEYWORD = /\bmotos?\b/i;
+
 // Driver identification (any of: cédula/CI, "conducido por", "chófer", cddno).
 const DRIVER_INFO =
   /\b(c[ée]dula|CI\s*:|C\.I\.?\s*:?|cddno|conducido por|ch[oó]fer)\b/i;
@@ -61,18 +65,20 @@ export function classifyDispatch(
   const hasArrival = ARRIVAL_VERB.test(text);
   const hasPlate = PLATE_LABEL.test(text) || PLATE_PATTERN.test(text);
   const hasMotos = MOTOS_COUNT.test(text);
+  const hasMotoKeyword = MOTOS_KEYWORD.test(text);
   const hasDriver = DRIVER_INFO.test(text);
   const hasDestination = DESTINATION.test(text);
   const hasDocs = DOCS.test(text);
 
   // GATE: must be a departure, must not simultaneously be an arrival report,
-  // and must show actual vehicle-dispatch structure (plate or moto count).
-  const gate = hasDeparture && !hasArrival && (hasPlate || hasMotos);
+  // and must show actual vehicle-dispatch structure (plate or moto count or moto keyword).
+  const gate = hasDeparture && !hasArrival && (hasPlate || hasMotos || hasMotoKeyword);
 
   let score = 0;
   if (hasDeparture) score += 0.3;
   if (hasPlate) score += 0.2;
   if (hasMotos) score += 0.25;
+  if (hasMotoKeyword && !hasMotos) score += 0.15; // lower weight when no count
   if (hasDriver) score += 0.1;
   if (hasDestination) score += 0.1;
   if (hasDocs) score += 0.05;
