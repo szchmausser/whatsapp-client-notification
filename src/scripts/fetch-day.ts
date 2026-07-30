@@ -41,6 +41,18 @@ interface FetchResponse {
   peerDataRequestSessionId?: string | null;
 }
 
+interface BootstrapHandle {
+  promise: Promise<SeedInfo>;
+  cancel: () => void;
+}
+
+interface FetchSummary {
+  matched: number;
+  processed: number;
+  skipped: number;
+  errors: number;
+}
+
 // ── CLI argument parsing ───────────────────────────────────────
 
 function parseArgs(argv: string[]): ParseResult {
@@ -53,36 +65,30 @@ function parseArgs(argv: string[]): ParseResult {
   return { dateStr, verbose };
 }
 
-// ── Date range computation — UTC day boundaries ─────────────────
+// ── Date range computation — local timezone day boundaries ──────
 
 function computeEpochRange(dateStr: string): DateRange {
   const [day, month, year] = dateStr.split("-").map(Number);
-  const start = Date.UTC(year, month - 1, day) / 1000; // epoch seconds
+  const start = new Date(year, month - 1, day).getTime() / 1000; // epoch seconds
   const end = start + 86400;
   return { start, end };
 }
 
 // ── Logger ─────────────────────────────────────────────────────
 
-const logger = pino({ level: "warn" });
+const logger = pino({ level: process.env.LOG_LEVEL || "info" });
 
-// ── Module counters ────────────────────────────────────────────
-
-let matched = 0;
-let processed = 0;
-let skipped = 0;
-let errors = 0;
 const MAX_BOOT_RETRIES = 3;
 
-// ── Summary ────────────────────────────────────────────────────
+// ── FetchSummary helpers ──────────────────────────────────────
 
-function logSummary(dateStr: string, startTime: number): void {
+function logSummary(summary: FetchSummary, dateStr: string, startTime: number): void {
   const duration = Math.round((Date.now() - startTime) / 1000);
-  if (matched === 0) {
+  if (summary.matched === 0) {
     logger.info(`No se encontraron mensajes para la fecha ${dateStr}.`);
   } else {
     logger.info(
-      `Fetch complete: ${matched} matched, ${processed} processed, ${errors} errors in ${duration}s for ${dateStr}`,
+      `Fetch complete: ${summary.matched} matched, ${summary.processed} processed, ${summary.errors} errors in ${duration}s for ${dateStr}`,
     );
   }
 }
@@ -107,7 +113,15 @@ function buildSocket(
       auth: state,
       logger,
       syncFullHistory: true,
-      shouldSyncHistoryMessage: () => true,
+      shouldSyncHistoryMessage: ({ syncType, oldestMsgInChunkTimestampSec }) => {
+        if (syncType === proto.HistorySync.HistorySyncType.FULL) return false;
+        if (oldestMsgInChunkTimestampSec) {
+          const MAX_AGE_SEC = 3 * 24 * 60 * 60;
+          const age = Math.floor(Date.now() / 1000) - Number(oldestMsgInChunkTimestampSec);
+          if (age > MAX_AGE_SEC) return false;
+        }
+        return true;
+      },
       printQRInTerminal: true,
       browser: ["Client Notification Fetch", "Chrome", "4.0.0"],
       getMessage: async (key: WAMessageKey): Promise<proto.IMessage | undefined> => {
@@ -159,58 +173,85 @@ function setupBootstrapListener(
   sock: ReturnType<typeof makeWASocket>,
   db: Database,
   config: Config,
-): Promise<SeedInfo> {
-  return new Promise<SeedInfo>((resolve, reject) => {
-    const BOOTSTRAP_TIMEOUT = 240_000;
+): BootstrapHandle {
+  const BOOTSTRAP_TIMEOUT = 240_000;
+  const DEBOUNCE_MS = 5_000;
+  let hardTimer: ReturnType<typeof setTimeout>;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const timer = setTimeout(() => {
-      sock.ev.off("messaging-history.set", bootstrapHandler);
-      reject(new Error("Bootstrap timeout: no messages received within 240s"));
+  const promise = new Promise<SeedInfo>((resolve, reject) => {
+    let oldestSeed: SeedInfo | null = null;
+    let processedCount = 0;
+
+    hardTimer = setTimeout(() => {
+      cleanup();
+      if (oldestSeed) {
+        resolve(oldestSeed);
+      } else {
+        reject(new Error("Bootstrap timeout: no messages received within 240s"));
+      }
     }, BOOTSTRAP_TIMEOUT);
+
+    function cleanup() {
+      clearTimeout(hardTimer);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      sock.ev.off("messaging-history.set", bootstrapHandler);
+    }
+
+    function tryResolve() {
+      cleanup();
+      if (oldestSeed) {
+        logger.info(
+          { messageId: oldestSeed.key.id, totalProcessed: processedCount },
+          "Bootstrap complete — captured seed message",
+        );
+        resolve(oldestSeed);
+      }
+    }
 
     const bootstrapHandler = async (data: {
       messages: WAMessage[];
       syncType?: proto.HistorySync.HistorySyncType | null;
     }) => {
-      // Only capture from initial bootstrap / recent sync, not on-demand
       if (data.syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) return;
 
       for (const msg of data.messages) {
-        const msgJid = msg.key.remoteJid;
-        if (!msgJid || msgJid !== config.chatJid) continue;
+        if (!msg.key.remoteJid || msg.key.remoteJid !== config.chatJid) continue;
         if (!msg.message || !msg.key.id) continue;
 
-        // Save to DB first so it becomes the oldest seed
-        await processMessage({
-          db,
-          chatJid: config.chatJid,
-          msg,
-          dispatchEnabled: config.dispatchEnabled,
-        });
+        await processMessage({ db, chatJid: config.chatJid, msg, dispatchEnabled: config.dispatchEnabled });
+        processedCount++;
 
-        clearTimeout(timer);
-        sock.ev.off("messaging-history.set", bootstrapHandler);
+        const ts =
+          typeof msg.messageTimestamp === "number"
+            ? msg.messageTimestamp
+            : msg.messageTimestamp?.toNumber() ?? Math.floor(Date.now() / 1000);
 
-        const seed: SeedInfo = {
-          key: {
-            remoteJid: config.chatJid,
-            id: msg.key.id,
-            fromMe: msg.key.fromMe ?? false,
-          },
-          timestamp:
-            typeof msg.messageTimestamp === "number"
-              ? msg.messageTimestamp
-              : msg.messageTimestamp?.toNumber() ?? Math.floor(Date.now() / 1000),
-        };
-
-        logger.info({ messageId: seed.key.id }, "Bootstrap captured seed message");
-        resolve(seed);
-        return;
+        if (!oldestSeed || ts < oldestSeed.timestamp) {
+          oldestSeed = {
+            key: { remoteJid: config.chatJid, id: msg.key.id, fromMe: msg.key.fromMe ?? false },
+            timestamp: ts,
+          };
+        }
       }
+
+      // Reset debounce — wait for more events before resolving
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(tryResolve, DEBOUNCE_MS);
     };
 
     sock.ev.on("messaging-history.set", bootstrapHandler);
   });
+
+  return {
+    promise,
+    cancel: () => {
+      clearTimeout(hardTimer);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      // Note: we can't remove the handler here easily since it's scoped inside the promise.
+      // Instead, the promise resolution/rejection will prevent further processing.
+    },
+  };
 }
 
 // ── Phase 3: fetchWithTimeout — one-shot ON_DEMAND waiter ──────
@@ -260,13 +301,20 @@ async function iterativeFetch(
   db: Database,
   config: Config,
   verbose: boolean,
-): Promise<void> {
+  disconnected: () => boolean,
+): Promise<FetchSummary> {
+  const summary: FetchSummary = { matched: 0, processed: 0, skipped: 0, errors: 0 };
   let currentSeed = seed;
   let retries = 0;
   const MAX_RETRIES = 3;
   const RETRY_DELAYS = [5_000, 15_000, 45_000];
 
   while (retries < MAX_RETRIES) {
+    if (disconnected()) {
+      logger.error("Connection lost during fetch. Exiting.");
+      return summary;
+    }
+
     const response = await fetchWithTimeout(sock, currentSeed, 30_000);
 
     if (response === null) {
@@ -287,7 +335,7 @@ async function iterativeFetch(
 
     if (!msgs || msgs.length === 0) {
       logger.info("No hay más historial disponible.");
-      return;
+      return summary;
     }
 
     // Process batch (newest first — reverse chronological order)
@@ -298,16 +346,16 @@ async function iterativeFetch(
           : msg.messageTimestamp?.toNumber() ?? 0;
 
       if (ts >= range.start && ts < range.end) {
-        matched++;
+        summary.matched++;
         const result = await processMessage({
           db,
           chatJid: config.chatJid,
           msg,
           dispatchEnabled: config.dispatchEnabled,
         });
-        if (result.skipped) skipped++;
-        else if (result.error) errors++;
-        else processed++;
+        if (result.skipped) summary.skipped++;
+        else if (result.error) summary.errors++;
+        else summary.processed++;
 
         if (verbose) {
           const status = result.error
@@ -329,8 +377,11 @@ async function iterativeFetch(
 
     // Stop if batch is a partial page (end of history) or predates target range
     if (msgs.length < 50 || oldestTs < range.start) {
-      return;
+      return summary;
     }
+
+    // Rate-limit delay between pages
+    await sleep(2_000);
 
     // Use oldest message as next seed to paginate further back
     currentSeed = {
@@ -344,6 +395,7 @@ async function iterativeFetch(
   }
 
   logger.error(`fetchMessageHistory failed after ${MAX_RETRIES} retries`);
+  return summary;
 }
 
 // ── Wait for connection.open ──────────────────────────────────
@@ -415,6 +467,7 @@ async function main() {
 
   // ── Connection retry loop (like client.ts — exponential backoff) ─
   let sock: ReturnType<typeof makeWASocket> | undefined;
+  let bootstrapHandle: BootstrapHandle | null = null;
   let seedPromise: Promise<SeedInfo> | null = null;
   let retryDelay = 1_000;
   const MAX_RETRY_DELAY = 30_000;
@@ -424,7 +477,10 @@ async function main() {
     sock = await connect();
 
     if (needBootstrap) {
-      seedPromise = setupBootstrapListener(sock, db, config);
+      // Cancel previous zombie promise before replacing it
+      bootstrapHandle?.cancel();
+      bootstrapHandle = setupBootstrapListener(sock, db, config);
+      seedPromise = bootstrapHandle.promise;
     }
 
     try {
@@ -453,6 +509,14 @@ async function main() {
     process.exit(1);
   }
 
+  // ── Mid-fetch disconnect detection ──────────────────────────────
+  let disconnected = false;
+  sock.ev.on("connection.update", (update) => {
+    if (update.connection === "close") {
+      disconnected = true;
+    }
+  });
+
   // ── Signal handlers (once, after connection) ───────────────────
   process.on("SIGINT", () => {
     sock?.end(undefined);
@@ -464,7 +528,7 @@ async function main() {
   });
 
   // ── Overall script timeout ─────────────────────────────────────
-  const TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || "120000", 10);
+  const TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || "600000", 10);
   const timeoutHandle = setTimeout(() => {
     sock?.end(undefined);
     logger.error(`Script timed out after ${TIMEOUT_MS}ms`);
@@ -484,16 +548,17 @@ async function main() {
   }
 
   // ── Iterative fetch loop ──────────────────────────────────────
+  let summary: FetchSummary;
   try {
-    await iterativeFetch(sock, seed!, range, db, config, verbose);
+    summary = await iterativeFetch(sock, seed!, range, db, config, verbose, () => disconnected);
   } finally {
     clearTimeout(timeoutHandle);
   }
 
   // ── Summary and exit ──────────────────────────────────────────
-  logSummary(dateStr, startTime);
+  logSummary(summary, dateStr, startTime);
   sock.end(undefined);
-  process.exit(matched > 0 ? 0 : 0);
+  process.exit(0);
 }
 
 main().catch((err) => {
