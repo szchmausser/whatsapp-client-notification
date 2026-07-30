@@ -255,7 +255,7 @@ export async function processMessage(
       orderNote,
     });
   } catch (err) {
-    return { skipped: true, messageId, sender, classified: false, dispatchInfo: null, error: err as Error };
+    return { skipped: false, messageId, sender, classified: false, dispatchInfo: null, error: err as Error };
   }
 
   // ── Dispatch classification ──────────────────────────────────

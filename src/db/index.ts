@@ -17,6 +17,10 @@ export async function createDb(config: DbConfig) {
     user: config.user,
     password: config.password,
     database: config.database,
+    connectionLimit: 10,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 30_000,
+    waitForConnections: true,
   });
 
   const db = drizzle(pool, { schema, mode: "default" });

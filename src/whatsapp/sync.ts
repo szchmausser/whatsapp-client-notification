@@ -3,6 +3,7 @@ import { eq, asc } from "drizzle-orm";
 import { messages } from "../db/schema.js";
 import type { Database } from "../db/index.js";
 import { processMessage } from "./message-processor.js";
+import { ensureChat } from "../db/ensure-chat.js";
 
 const HISTORY_FETCH_COUNT = 50; // Baileys max per query
 
@@ -17,8 +18,18 @@ export function setupHistorySyncListener(
   chatJids: string[],
   dispatchEnabled: boolean = false
 ): void {
-  socket.ev.on("messaging-history.set", async ({ messages: histMsgs, chats, isLatest }) => {
-    console.log(`[Sync] Full history received: ${histMsgs.length} messages, ${chats.length} chats (isLatest: ${isLatest})`);
+  socket.ev.on("messaging-history.set", async ({ messages: histMsgs, chats: syncChats, isLatest }) => {
+    console.log(`[Sync] History received: ${histMsgs.length} messages, ${syncChats.length} chats (isLatest: ${isLatest})`);
+
+    // Ensure all monitored chats exist before inserting messages
+    const jidsInBatch = new Set(
+      histMsgs
+        .map((m) => m.key.remoteJid)
+        .filter((jid): jid is string => !!jid && chatJids.includes(jid))
+    );
+    for (const jid of jidsInBatch) {
+      await ensureChat(db, jid);
+    }
 
     let captured = 0;
     for (const msg of histMsgs) {
