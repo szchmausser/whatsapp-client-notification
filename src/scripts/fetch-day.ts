@@ -11,7 +11,7 @@ import makeWASocket, {
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
-import { eq, asc } from "drizzle-orm";
+import { eq, asc, gte, and } from "drizzle-orm";
 // no unused fs/promises imports needed (auth is preserved, not deleted)
 import { createDb, type Database } from "../db/index.js";
 import { loadConfig, type Config } from "../config.js";
@@ -122,7 +122,6 @@ function buildSocket(
         }
         return true;
       },
-      printQRInTerminal: true,
       browser: ["Client Notification Fetch", "Chrome", "4.0.0"],
       getMessage: async (key: WAMessageKey): Promise<proto.IMessage | undefined> => {
         if (!key.id) return undefined;
@@ -142,29 +141,38 @@ function buildSocket(
   };
 }
 
-// ── Phase 2: Get oldest message from DB ────────────────────────
+// ── Phase 2: Seed detection — from DB ──────────────────────────
 
-async function getOldestSeed(
+/**
+ * Find a message in DB with timestamp >= rangeEnd to use as seed.
+ * This ensures backward pagination from the seed lands in or after the target date.
+ * If no such message exists, returns null to trigger the bootstrap path.
+ */
+export async function getSeedAfterTimestamp(
   db: Database,
   chatJid: string,
+  rangeEnd: number,
 ): Promise<SeedInfo | null> {
-  const rows = await db
+  // First: message with timestamp >= rangeEnd (closest after target date)
+  const afterTarget = await db
     .select()
     .from(messages)
-    .where(eq(messages.chatJid, chatJid))
+    .where(and(eq(messages.chatJid, chatJid), gte(messages.timestamp, rangeEnd)))
     .orderBy(asc(messages.timestamp))
     .limit(1);
 
-  if (rows.length === 0) return null;
+  if (afterTarget.length > 0) {
+    return {
+      key: {
+        remoteJid: chatJid,
+        id: afterTarget[0].messageId!,
+        fromMe: afterTarget[0].isFromMe ?? false,
+      },
+      timestamp: afterTarget[0].timestamp,
+    };
+  }
 
-  return {
-    key: {
-      remoteJid: chatJid,
-      id: rows[0].messageId!,
-      fromMe: rows[0].isFromMe ?? false,
-    },
-    timestamp: rows[0].timestamp, // epoch seconds
-  };
+  return null;
 }
 
 // ── Phase 2: Bootstrap listener — captures seed from sync ──────
@@ -457,7 +465,7 @@ async function main() {
   const db = await createDb(config.db);
 
   // Seed detection
-  let seed = await getOldestSeed(db, config.chatJid);
+  let seed = await getSeedAfterTimestamp(db, config.chatJid, range.end);
   const needBootstrap = !seed;
 
   if (needBootstrap) {
@@ -561,7 +569,10 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((err) => {
-  logger.error({ err }, "Fatal error");
-  process.exit(1);
-});
+// Only run main() when executed as a standalone script, not when imported as a module
+if (!process.env.VITEST) {
+  main().catch((err) => {
+    logger.error({ err }, "Fatal error");
+    process.exit(1);
+  });
+}
