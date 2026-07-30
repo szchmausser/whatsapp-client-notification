@@ -2,7 +2,7 @@ import { loadConfig } from "./config.js";
 import { createDb } from "./db/index.js";
 import { createClient } from "./whatsapp/client.js";
 import { setupMessageHandler } from "./whatsapp/handler.js";
-import { setupHistorySyncListener, fetchOlderMessages } from "./whatsapp/sync.js";
+import { setupHistorySyncListener } from "./whatsapp/sync.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -13,7 +13,7 @@ async function main(): Promise<void> {
     const db = await createDb(config.db);
     console.log(`Database initialized: ${config.db.host}:${config.db.port}/${config.db.database}`);
 
-    // 2. Connect to WhatsApp — register messaging-history.set BEFORE connection opens
+    // 2. Connect to WhatsApp — register history sync listener BEFORE connection opens
     const client = createClient(config.authDir, (socket) => {
       setupHistorySyncListener(socket, db, [config.chatJid], config.dispatchEnabled);
     });
@@ -24,13 +24,7 @@ async function main(): Promise<void> {
       setupMessageHandler(socket, db, config.chatJid, config.captureDirection, config.dispatchEnabled);
     });
 
-    // 4. On reconnection, fetch older messages using DB reference
-    client.onReconnect((socket) => {
-      console.log("Reconnection detected, fetching older messages...");
-      fetchOlderMessages(socket, db, config.chatJid).catch((err) => {
-        console.error("[Sync] History request failed:", err);
-      });
-    });
+    // 4. Reconnection delta sync handled automatically by Baileys
 
     // 5. Graceful shutdown
     const shutdown = async (signal: string): Promise<void> => {

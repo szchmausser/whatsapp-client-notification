@@ -1,0 +1,9 @@
+status: archived
+date: 2026-07-30
+change: fetch-message-history
+summary: >
+  Replaced one-shot messaging-history.set with iterative fetchMessageHistory
+  pagination. Extracted message-processor.ts as shared module. Updated handler.ts,
+  client.ts, sync.ts, and index.ts. Fixed timestamp seconds-to-milliseconds bug.
+  2 CRITICAL verify findings accepted by user (exit code 3 not implemented on
+  retry exhaustion, socket config missing 4 of 7 mandated options).

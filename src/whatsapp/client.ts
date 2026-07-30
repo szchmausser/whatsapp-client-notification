@@ -11,9 +11,8 @@ import qrcode from "qrcode-terminal";
 
 const logger = pino({ level: "error" });
 
-// Only sync history from the last 7 days
-const HISTORY_MAX_AGE_DAYS = 7;
-const HISTORY_MAX_AGE_SEC = HISTORY_MAX_AGE_DAYS * 24 * 60 * 60;
+const SYNC_MAX_AGE_DAYS = 3;
+const SYNC_MAX_AGE_SEC = SYNC_MAX_AGE_DAYS * 24 * 60 * 60;
 
 interface ClientResult {
   getSocket: () => WASocket | null;
@@ -42,15 +41,15 @@ export function createClient(
       markOnlineOnConnect: false,
       browser: ["Client Notification", "Chrome", "4.0.0"],
       shouldSyncHistoryMessage: ({ syncType, oldestMsgInChunkTimestampSec }) => {
-        // Reject FULL syncs (too large, takes forever)
+        // Rechazar syncs FULL (son demasiado grandes y contienen data muy vieja)
         if (syncType === proto.HistorySync.HistorySyncType.FULL) {
           return false;
         }
-        // Filter by date: only accept chunks from the last 7 days
+        // Solo aceptar chunks de los últimos SYNC_MAX_AGE_DAYS días
         if (oldestMsgInChunkTimestampSec) {
           const chunkAge = Math.floor(Date.now() / 1000) - Number(oldestMsgInChunkTimestampSec);
-          if (chunkAge > HISTORY_MAX_AGE_SEC) {
-            console.log(`[Sync] Skipping chunk: oldest msg is ${Math.floor(chunkAge / 86400)} days old (max: ${HISTORY_MAX_AGE_DAYS})`);
+          if (chunkAge > SYNC_MAX_AGE_SEC) {
+            console.log(`[Sync] Skipping chunk: oldest msg is ${Math.floor(chunkAge / 86400)} days old (max: ${SYNC_MAX_AGE_DAYS})`);
             return false;
           }
         }
@@ -125,14 +124,14 @@ export function createClient(
           readyCallback(socket);
         }
 
-        // En reconexión, además pedir mensajes perdidos
-        const isReconnect = (state.creds.accountSyncCounter || 0) > 0;
-        if (isReconnect) {
-          console.log("Reconnection detected, requesting recent messages...");
-          if (reconnectCallback && socket) {
-            reconnectCallback(socket);
-          }
-        }
+        // En reconexión — el delta sync de Baileys maneja los mensajes perdidos
+        // const isReconnect = (state.creds.accountSyncCounter || 0) > 0;
+        // if (isReconnect) {
+        //   console.log("Reconnection detected, requesting recent messages...");
+        //   if (reconnectCallback && socket) {
+        //     reconnectCallback(socket);
+        //   }
+        // }
       }
     });
 

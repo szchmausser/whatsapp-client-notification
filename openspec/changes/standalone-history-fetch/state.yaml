@@ -1,0 +1,5 @@
+change: standalone-history-fetch
+phase: explore
+status: complete
+artifacts:
+  - exploration.md

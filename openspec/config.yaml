@@ -1,0 +1,42 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Node.js + TypeScript (ES2022, strict mode, ESM)
+  Architecture: Standalone data collector — WhatsApp messages → MySQL
+  ORM: Drizzle ORM (MySQL dialect)
+  WhatsApp: @whiskeysockets/baileys v7
+  Testing: Vitest (unit tests), strict_tdd enabled
+  Style: Conventional commits, no AI attribution
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Reference affected modules by path
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Keep delta specs under 200 lines
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Reference existing patterns in src/
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Each task = one logical commit
+  apply:
+    guidelines:
+      - Follow existing code patterns (functional, no classes)
+      - No repository pattern — raw MySQL queries
+      - No controllers/services/DTOs — no web framework
+      - Raw payload storage — extract only what's queried
+    tdd: true
+    test_command: "npx vitest run"
+    type_check: "npx tsc --noEmit"
+  verify:
+    test_command: "npx vitest run"
+    build_command: "npm run build"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+    - Verify all tasks marked complete before archiving

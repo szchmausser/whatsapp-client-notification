@@ -6,6 +6,7 @@ dist/
 
 # Auth session (WhatsApp credentials - NEVER commit)
 auth/
+auth-fetch/
 
 # Environment variables
 .env
