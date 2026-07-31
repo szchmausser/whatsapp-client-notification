@@ -11,7 +11,7 @@ import makeWASocket, {
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
-import { eq, asc, gte, and } from "drizzle-orm";
+import { eq, asc, desc, gte, and } from "drizzle-orm";
 // no unused fs/promises imports needed (auth is preserved, not deleted)
 import { createDb, type Database } from "../db/index.js";
 import { loadConfig, type Config } from "../config.js";
@@ -29,6 +29,7 @@ interface DateRange {
 interface ParseResult {
   dateStr: string;
   verbose: boolean;
+  fillGaps: boolean;
 }
 
 interface SeedInfo {
@@ -55,22 +56,46 @@ interface FetchSummary {
 
 // ── CLI argument parsing ───────────────────────────────────────
 
+export function isValidCalendarDate(day: number, month: number, year: number): boolean {
+  // new Date() "normalizes" overflow (e.g. 31-02 -> 03-03), so we roundtrip
+  // and confirm the components survived unchanged.
+  const d = new Date(year, month - 1, day);
+  return d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day;
+}
+
 function parseArgs(argv: string[]): ParseResult {
   const dateStr = argv[2];
-  if (!dateStr || !/^(\d{2})-(\d{2})-(\d{4})$/.test(dateStr)) {
-    console.error("Invalid date format: " + (dateStr || "(missing)"));
+  const match = dateStr ? /^(\d{2})-(\d{2})-(\d{4})$/.exec(dateStr) : null;
+  if (!match) {
+    console.error("Invalid date format: " + (dateStr || "(missing)") + ". Formato esperado: dd-mm-aaaa");
     process.exit(1);
   }
-  const verbose = argv.slice(3).includes("--verbose");
-  return { dateStr, verbose };
+
+  const [, ddStr, mmStr, yyyyStr] = match;
+  const day = Number(ddStr);
+  const month = Number(mmStr);
+  const year = Number(yyyyStr);
+
+  if (!isValidCalendarDate(day, month, year)) {
+    console.error(`Fecha inexistente en el calendario: ${dateStr}`);
+    process.exit(1);
+  }
+
+  const flags = argv.slice(3);
+  const verbose = flags.includes("--verbose");
+  const fillGaps = flags.includes("--fill-gaps");
+  return { dateStr, verbose, fillGaps };
 }
 
 // ── Date range computation — local timezone day boundaries ──────
 
-function computeEpochRange(dateStr: string): DateRange {
+export function computeEpochRange(dateStr: string): DateRange {
   const [day, month, year] = dateStr.split("-").map(Number);
-  const start = new Date(year, month - 1, day).getTime() / 1000; // epoch seconds
-  const end = start + 86400;
+  const start = new Date(year, month - 1, day).getTime() / 1000; // epoch seconds, local midnight
+  // Compute the *next* local midnight directly instead of start + 86400.
+  // In timezones with DST, the day of the transition has 23h or 25h, so a
+  // fixed +86400s offset would land off the real midnight.
+  const end = new Date(year, month - 1, day + 1).getTime() / 1000;
   return { start, end };
 }
 
@@ -82,13 +107,19 @@ const MAX_BOOT_RETRIES = 3;
 
 // ── FetchSummary helpers ──────────────────────────────────────
 
-function logSummary(summary: FetchSummary, dateStr: string, startTime: number): void {
+function logSummary(
+  summary: FetchSummary,
+  dateStr: string,
+  startTime: number,
+  fillGaps = false,
+): void {
   const duration = Math.round((Date.now() - startTime) / 1000);
+  const modeStr = fillGaps ? " (fill-gaps mode)" : "";
   if (summary.matched === 0) {
-    logger.info(`No se encontraron mensajes para la fecha ${dateStr}.`);
+    logger.info(`No se encontraron mensajes para la fecha ${dateStr}${modeStr}.`);
   } else {
     logger.info(
-      `Fetch complete: ${summary.matched} matched, ${summary.processed} processed, ${summary.errors} errors in ${duration}s for ${dateStr}`,
+      `Fetch complete: ${summary.matched} matched, ${summary.processed} processed, ${summary.errors} errors in ${duration}s for ${dateStr}${modeStr}`,
     );
   }
 }
@@ -137,6 +168,20 @@ function buildSocket(
 
     sock.ev.on("creds.update", saveCreds);
 
+    // Save offline/realtime messages received while socket connects
+    sock.ev.on("messages.upsert", async (data) => {
+      for (const msg of data.messages) {
+        if (msg.key.remoteJid === config.chatJid && msg.message) {
+          await processMessage({
+            db,
+            chatJid: config.chatJid,
+            msg,
+            dispatchEnabled: config.dispatchEnabled,
+          });
+        }
+      }
+    });
+
     return sock;
   };
 }
@@ -146,12 +191,26 @@ function buildSocket(
 /**
  * Find a message in DB with timestamp >= rangeEnd to use as seed.
  * This ensures backward pagination from the seed lands in or after the target date.
+ * Fallback: If no message >= rangeEnd exists (e.g., current day or gap without future messages),
+ * find the latest message in DB for this chat whose timestamp >= rangeStart.
  * If no such message exists, returns null to trigger the bootstrap path.
  */
+function rowToSeed(
+  row: { messageId: string | null; isFromMe: boolean | null; timestamp: number },
+  chatJid: string,
+): SeedInfo | null {
+  if (!row.messageId) return null;
+  return {
+    key: { remoteJid: chatJid, id: row.messageId, fromMe: row.isFromMe ?? false },
+    timestamp: row.timestamp,
+  };
+}
+
 export async function getSeedAfterTimestamp(
   db: Database,
   chatJid: string,
   rangeEnd: number,
+  rangeStart?: number,
 ): Promise<SeedInfo | null> {
   // First: message with timestamp >= rangeEnd (closest after target date)
   const afterTarget = await db
@@ -162,14 +221,25 @@ export async function getSeedAfterTimestamp(
     .limit(1);
 
   if (afterTarget.length > 0) {
-    return {
-      key: {
-        remoteJid: chatJid,
-        id: afterTarget[0].messageId!,
-        fromMe: afterTarget[0].isFromMe ?? false,
-      },
-      timestamp: afterTarget[0].timestamp,
-    };
+    const seed = rowToSeed(afterTarget[0], chatJid);
+    if (seed) return seed;
+    logger.warn({ row: afterTarget[0] }, "Seed candidate (afterTarget) sin messageId, se descarta");
+  }
+
+  // Fallback: if rangeStart is provided, find latest message in DB >= rangeStart
+  if (typeof rangeStart === "number") {
+    const latestMsg = await db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.chatJid, chatJid), gte(messages.timestamp, rangeStart)))
+      .orderBy(desc(messages.timestamp))
+      .limit(1);
+
+    if (latestMsg.length > 0) {
+      const seed = rowToSeed(latestMsg[0], chatJid);
+      if (seed) return seed;
+      logger.warn({ row: latestMsg[0] }, "Seed candidate (fallback) sin messageId, se descarta");
+    }
   }
 
   return null;
@@ -181,83 +251,102 @@ function setupBootstrapListener(
   sock: ReturnType<typeof makeWASocket>,
   db: Database,
   config: Config,
+  range: DateRange,
+  fillGaps: boolean,
 ): BootstrapHandle {
   const BOOTSTRAP_TIMEOUT = 240_000;
   const DEBOUNCE_MS = 5_000;
+
   let hardTimer: ReturnType<typeof setTimeout>;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let oldestSeed: SeedInfo | null = null;
+  let processedCount = 0;
+  let settled = false;
 
+  let resolvePromise!: (value: SeedInfo) => void;
+  let rejectPromise!: (reason: Error) => void;
   const promise = new Promise<SeedInfo>((resolve, reject) => {
-    let oldestSeed: SeedInfo | null = null;
-    let processedCount = 0;
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
 
-    hardTimer = setTimeout(() => {
-      cleanup();
-      if (oldestSeed) {
-        resolve(oldestSeed);
-      } else {
-        reject(new Error("Bootstrap timeout: no messages received within 240s"));
-      }
-    }, BOOTSTRAP_TIMEOUT);
+  // Declared before use so cleanup()/cancel() can always reach the exact
+  // same function reference that was passed to sock.ev.on(...).
+  function cleanup() {
+    clearTimeout(hardTimer);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    sock.ev.off("messaging-history.set", bootstrapHandler);
+  }
 
-    function cleanup() {
-      clearTimeout(hardTimer);
-      if (debounceTimer) clearTimeout(debounceTimer);
-      sock.ev.off("messaging-history.set", bootstrapHandler);
+  function tryResolve() {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    if (oldestSeed) {
+      logger.info(
+        { messageId: oldestSeed.key.id, totalProcessed: processedCount },
+        "Bootstrap complete — captured seed message",
+      );
+      resolvePromise(oldestSeed);
+    } else {
+      rejectPromise(new Error("Bootstrap timeout: no messages received within 240s"));
     }
+  }
 
-    function tryResolve() {
-      cleanup();
-      if (oldestSeed) {
-        logger.info(
-          { messageId: oldestSeed.key.id, totalProcessed: processedCount },
-          "Bootstrap complete — captured seed message",
-        );
-        resolve(oldestSeed);
-      }
-    }
+  const bootstrapHandler = async (data: {
+    messages: WAMessage[];
+    syncType?: proto.HistorySync.HistorySyncType | null;
+  }) => {
+    if (settled) return; // defensive: ignore stray events after cancel()/resolve()
+    if (data.syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) return;
 
-    const bootstrapHandler = async (data: {
-      messages: WAMessage[];
-      syncType?: proto.HistorySync.HistorySyncType | null;
-    }) => {
-      if (data.syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) return;
+    for (const msg of data.messages) {
+      if (!msg.key.remoteJid || msg.key.remoteJid !== config.chatJid) continue;
+      if (!msg.message || !msg.key.id) continue;
 
-      for (const msg of data.messages) {
-        if (!msg.key.remoteJid || msg.key.remoteJid !== config.chatJid) continue;
-        if (!msg.message || !msg.key.id) continue;
+      const ts =
+        typeof msg.messageTimestamp === "number"
+          ? msg.messageTimestamp
+          : msg.messageTimestamp?.toNumber() ?? Math.floor(Date.now() / 1000);
 
+      // Persist only what belongs to the requested window (or, with
+      // --fill-gaps, anything from range.start onward) — same rule
+      // iterativeFetch uses, so bootstrap doesn't silently over-save.
+      const inTargetRange = ts >= range.start && ts < range.end;
+      const shouldProcess = fillGaps ? ts >= range.start : inTargetRange;
+
+      if (shouldProcess) {
         await processMessage({ db, chatJid: config.chatJid, msg, dispatchEnabled: config.dispatchEnabled });
         processedCount++;
-
-        const ts =
-          typeof msg.messageTimestamp === "number"
-            ? msg.messageTimestamp
-            : msg.messageTimestamp?.toNumber() ?? Math.floor(Date.now() / 1000);
-
-        if (!oldestSeed || ts < oldestSeed.timestamp) {
-          oldestSeed = {
-            key: { remoteJid: config.chatJid, id: msg.key.id, fromMe: msg.key.fromMe ?? false },
-            timestamp: ts,
-          };
-        }
       }
 
-      // Reset debounce — wait for more events before resolving
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(tryResolve, DEBOUNCE_MS);
-    };
+      // Track the oldest message seen regardless of whether it was
+      // persisted — this is what iterativeFetch will paginate backward
+      // from next, so it must reflect the true oldest boundary of the
+      // initial sync, not just the oldest *saved* message.
+      if (!oldestSeed || ts < oldestSeed.timestamp) {
+        oldestSeed = {
+          key: { remoteJid: config.chatJid, id: msg.key.id, fromMe: msg.key.fromMe ?? false },
+          timestamp: ts,
+        };
+      }
+    }
 
-    sock.ev.on("messaging-history.set", bootstrapHandler);
-  });
+    // Reset debounce — wait for more events before resolving
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(tryResolve, DEBOUNCE_MS);
+  };
+
+  sock.ev.on("messaging-history.set", bootstrapHandler);
+
+  hardTimer = setTimeout(tryResolve, BOOTSTRAP_TIMEOUT);
 
   return {
     promise,
     cancel: () => {
-      clearTimeout(hardTimer);
-      if (debounceTimer) clearTimeout(debounceTimer);
-      // Note: we can't remove the handler here easily since it's scoped inside the promise.
-      // Instead, the promise resolution/rejection will prevent further processing.
+      if (settled) return;
+      settled = true;
+      cleanup();
     },
   };
 }
@@ -309,6 +398,7 @@ async function iterativeFetch(
   db: Database,
   config: Config,
   verbose: boolean,
+  fillGaps: boolean,
   disconnected: () => boolean,
 ): Promise<FetchSummary> {
   const summary: FetchSummary = { matched: 0, processed: 0, skipped: 0, errors: 0 };
@@ -353,7 +443,10 @@ async function iterativeFetch(
           ? msg.messageTimestamp
           : msg.messageTimestamp?.toNumber() ?? 0;
 
-      if (ts >= range.start && ts < range.end) {
+      const inTargetRange = ts >= range.start && ts < range.end;
+      const shouldProcess = fillGaps ? ts >= range.start : inTargetRange;
+
+      if (shouldProcess) {
         summary.matched++;
         const result = await processMessage({
           db,
@@ -388,6 +481,11 @@ async function iterativeFetch(
       return summary;
     }
 
+    if (!oldest.key.id) {
+      logger.error("El mensaje más antiguo del batch no tiene id; no se puede continuar paginando.");
+      return summary;
+    }
+
     // Rate-limit delay between pages
     await sleep(2_000);
 
@@ -395,7 +493,7 @@ async function iterativeFetch(
     currentSeed = {
       key: {
         remoteJid: oldest.key.remoteJid || config.chatJid,
-        id: oldest.key.id!,
+        id: oldest.key.id,
         fromMe: oldest.key.fromMe ?? false,
       },
       timestamp: oldestTs,
@@ -412,7 +510,7 @@ function waitForOpen(
   sock: ReturnType<typeof makeWASocket>,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    sock.ev.on("connection.update", (update: Partial<ConnectionState>) => {
+    const handler = (update: Partial<ConnectionState>) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -430,12 +528,15 @@ function waitForOpen(
         const isLoggedOut = statusCode === DisconnectReason.loggedOut;
 
         if (isLoggedOut) {
+          sock.ev.off("connection.update", handler);
           console.log(
             "Sesión expirada. Eliminá ./auth-fetch/ y ejecutá de nuevo para re-escanear QR.",
           );
           process.exit(1);
           return;
         }
+
+        sock.ev.off("connection.update", handler);
 
         if (shouldRetryDisconnect(statusCode)) {
           reject(new Error(`Connection closed (status ${statusCode})`));
@@ -446,10 +547,13 @@ function waitForOpen(
       }
 
       if (connection === "open") {
+        sock.ev.off("connection.update", handler);
         logger.info("WhatsApp connection established");
         resolve();
       }
-    });
+    };
+
+    sock.ev.on("connection.update", handler);
   });
 }
 
@@ -457,26 +561,16 @@ function waitForOpen(
 
 async function main() {
   const config = loadConfig();
-  const { dateStr, verbose } = parseArgs(process.argv);
+  const { dateStr, verbose, fillGaps } = parseArgs(process.argv);
   const range = computeEpochRange(dateStr);
   const startTime = Date.now();
 
   const AUTH_DIR = "./auth-fetch";
   const db = await createDb(config.db);
 
-  // Seed detection
-  let seed = await getSeedAfterTimestamp(db, config.chatJid, range.end);
-  const needBootstrap = !seed;
-
-  if (needBootstrap) {
-    logger.info("No messages in DB — entering bootstrap path (own session)");
-    // NOT deleting auth-fetch — preserve any partial creds between retries
-  }
-
   // ── Connection retry loop (like client.ts — exponential backoff) ─
   let sock: ReturnType<typeof makeWASocket> | undefined;
   let bootstrapHandle: BootstrapHandle | null = null;
-  let seedPromise: Promise<SeedInfo> | null = null;
   let retryDelay = 1_000;
   const MAX_RETRY_DELAY = 30_000;
 
@@ -484,18 +578,16 @@ async function main() {
     const connect = buildSocket(config, db, AUTH_DIR);
     sock = await connect();
 
-    if (needBootstrap) {
-      // Cancel previous zombie promise before replacing it
-      bootstrapHandle?.cancel();
-      bootstrapHandle = setupBootstrapListener(sock, db, config);
-      seedPromise = bootstrapHandle.promise;
-    }
+    // Register bootstrap listener EARLY (before connection.open) to catch messaging-history.set on new QR sessions
+    bootstrapHandle?.cancel();
+    bootstrapHandle = setupBootstrapListener(sock, db, config, range, fillGaps);
 
     try {
       await waitForOpen(sock);
       break; // connected successfully
     } catch (err) {
       sock?.end(undefined);
+      bootstrapHandle?.cancel();
       if (attempt < MAX_BOOT_RETRIES) {
         logger.warn(
           `Connection closed. Reconnecting in ${retryDelay}ms (attempt ${attempt}/${MAX_BOOT_RETRIES})...`,
@@ -513,7 +605,7 @@ async function main() {
     }
   }
 
-  if (!sock) {
+  if (!sock || !bootstrapHandle) {
     process.exit(1);
   }
 
@@ -528,10 +620,12 @@ async function main() {
   // ── Signal handlers (once, after connection) ───────────────────
   process.on("SIGINT", () => {
     sock?.end(undefined);
+    bootstrapHandle?.cancel();
     process.exit(130);
   });
   process.on("SIGTERM", () => {
     sock?.end(undefined);
+    bootstrapHandle?.cancel();
     process.exit(143);
   });
 
@@ -539,14 +633,23 @@ async function main() {
   const TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || "600000", 10);
   const timeoutHandle = setTimeout(() => {
     sock?.end(undefined);
+    bootstrapHandle?.cancel();
     logger.error(`Script timed out after ${TIMEOUT_MS}ms`);
     process.exit(2);
   }, TIMEOUT_MS);
 
-  // ── Resolve bootstrap seed ────────────────────────────────────
-  if (needBootstrap) {
+  // ── Seed detection AFTER connection (allows offline messages to flush to DB)
+  await sleep(3_000);
+
+  let seed = await getSeedAfterTimestamp(db, config.chatJid, range.end, range.start);
+
+  if (seed) {
+    // Seed found in DB — cancel early bootstrap listener as it's not needed
+    bootstrapHandle.cancel();
+  } else {
+    logger.info("No messages in DB — awaiting bootstrap sync from early listener");
     try {
-      seed = await seedPromise!;
+      seed = await bootstrapHandle.promise;
     } catch (err) {
       clearTimeout(timeoutHandle);
       logger.error({ err }, "No se pudo obtener historial inicial. Probá de nuevo.");
@@ -558,13 +661,13 @@ async function main() {
   // ── Iterative fetch loop ──────────────────────────────────────
   let summary: FetchSummary;
   try {
-    summary = await iterativeFetch(sock, seed!, range, db, config, verbose, () => disconnected);
+    summary = await iterativeFetch(sock, seed!, range, db, config, verbose, fillGaps, () => disconnected);
   } finally {
     clearTimeout(timeoutHandle);
   }
 
   // ── Summary and exit ──────────────────────────────────────────
-  logSummary(summary, dateStr, startTime);
+  logSummary(summary, dateStr, startTime, fillGaps);
   sock.end(undefined);
   process.exit(0);
 }
